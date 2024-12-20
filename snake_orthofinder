@@ -1,0 +1,74 @@
+#species names with known rec rates among ants, bees and wasps (pogonomyrmex californicus is a proxy for pogonomyrmex rugosus)
+#excluding nasonia
+species_name, = glob_wildcards("/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/genome/{species}.fna.gz")
+#where the gff and genome fasta for each species in the study is
+gen_gff_path="/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/genome/"
+#the path to access all sub dir where inputs and outputs are housed for this project
+work_path="/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/"
+
+#read in assigned orthogroups to run interproscan
+#if this was going to run for another analysis, this would need to be updated as a checkpoint
+#because the list depends on a variable number of outputs from orthofinder
+#ortho_file = open("assigned_ortho_ids.txt", "r")
+#ortho_data = ortho_file.read()
+#ortho_list = ortho_data.split("\n")
+#ortho_list = ortho_list[:-1]
+#print(ortho_list)
+#ortho_file.close()
+
+
+
+rule all:
+    input:"orthofinder_done.txt"
+          #expand("orthogroup_go_terms/{assn_ortho}_go_done.txt",assn_ortho=ortho_list)
+
+#before running AGAT, activate agatenv (conda activate agatenv)
+#you need to do this in shell (bash)
+#filter longest isoform in a gff file using AGAT
+rule longest_isoform:
+     input: annotation = gen_gff_path+"{name}.gff.gz"
+     output: work_path+"longest_isoform/{name}_longiso.gff"
+     resources: mem_mb = 6000
+     params:cpu = 1,
+            unzip=gen_gff_path+"{name}.gff"
+     shell:"""
+           module load agat
+           module load samtools/1.9
+           gunzip -c {input.annotation} > {params.unzip}
+           agat_sp_keep_longest_isoform.pl -gff {params.unzip} -o {output}
+           """
+
+#CDS aminoacids file using AGAT, taking the longest isoform gffs of each species as input
+rule CDS_aminoacids:
+     input:  work_path+"longest_isoform/{name}_longiso.gff"
+     output: work_path+"prot_dir/{name}_CDS_aas.fasta"
+     resources: mem_mb = 6000
+     params: cpu = 1,
+             zip= gen_gff_path+"{name}.fna.gz",
+             fasta = gen_gff_path+"{name}.fna",
+             id="{name}",
+             sans_sp_id=work_path+"prot_dir/{name}_sans_id.fasta"
+     shell:"""
+           module load agat
+           module load samtools/1.9
+           gunzip -c  {params.zip} > {params.fasta}
+           agat_sp_extract_sequences.pl -g {input} -f {params.fasta} -t cds -p --roo --clean_final_stop -o {params.sans_sp_id}
+           #adding a species ID to each of the coding seuqnces. important for downstream analysis, trees etc
+           sed 's/>/>{params.id}_/g' {params.sans_sp_id} > {output}
+           rm {params.sans_sp_id}
+           """
+#job not submitting on cluster, so I lowered memory and cpus
+#added the msa output 
+rule orthofinder:
+     input:fasta=expand(work_path+"prot_dir/{name}_CDS_aas.fasta",name=species_name)
+     output:"orthofinder_done.txt"
+     resources:mem_mb = 35000
+     params:cpu=15,
+            path = work_path+"prot_dir/"
+     shell:"""
+           module load singularity
+           singularity exec $HOME/orthofinder_latest.sif orthofinder -f {params.path} -M msa
+           touch {output}
+           """
+
+

@@ -1,0 +1,24 @@
+#this snakefil is for running busted on all of the single copy orthogroups that have all of the species present in the dna alignment
+orthog_name, = glob_wildcards("/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/single_copy_dna_alignments_all_species/{orthogroup}_final_align_NT.aln")
+alns="/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/single_copy_dna_alignments_all_species/"
+#rule all:
+#     input:expand(cdsnucl_rn+"{name}.fasta", name=species_name), cdsnucl_rn+"All_CDS_nucl.fasta", expand(out+"{id}_nucl.fa", id=orthog_name), expand(out_dup+"{id}_output_alignment", id=orthog_name), expand(out_dup+"{id}_AA_NT_alignments", id=orthog_name)
+rule all:
+     input:expand(alns+"{id}_busted_done.txt",id=orthog_name) 
+      #expand(out+"{id}_nucl.fa", id=orthog_name),
+
+
+#run busted hyphy
+rule run_busted:
+     input:alns+"{id}_final_align_NT.aln"
+     output:alns+"{id}_busted_done.txt"
+     resources:mem_mb=lambda wildcards, input, attempt: (9000*attempt)
+     params:cpu=3,
+            id="{id}",
+            tree_path=alns+"busted_trees/{id}_tree.txt"
+     shell:"""
+           $HOME/hyphy/hyphy  LIBPATH=/uufs/chpc.utah.edu/common/home/u6024372/hyphy/res \
+           /uufs/chpc.utah.edu/common/home/u6024372/hyphy_analysis/BUSTED-MH/BUSTED-MH.bf \
+           --alignment {input} --tree {params.tree_path} --srv Yes --branches All
+           touch {output}
+           """

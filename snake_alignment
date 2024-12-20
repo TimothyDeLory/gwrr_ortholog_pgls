@@ -1,0 +1,126 @@
+#This snakefile is to get nucleotide sequences for each single copy orthologue orthogroup 
+#that will be used as input for the nucleotide and aminoacids  alignments using MACSE.
+#The nucleotide alignments will be used to make gene trees
+
+#directory for longest isoforms
+longiso_dir = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/longest_isoform/"
+#directory with genomes and annotation
+gen_annt_dir = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/genome/"
+#CDS nucleotide sequences directory
+cdsnucl_dir = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/CDS_nucl/"
+cdsnucl_rn = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/CDS_nucl/CDS_nucl_renamed/"
+#directory for single copy orthogroup sequences
+ortho_seq_dir = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/prot_dir/OrthoFinder/Results_Sep19_2/Single_Copy_Orthologue_Sequences/"
+#output directory for alignments
+out = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/alignments/subset_spp/"
+#output for trees
+out1 = "/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/trees/subset_spp/"
+
+orthog_name, = glob_wildcards("/uufs/chpc.utah.edu/common/home/kapheim-group2/chpt_1_delory/prot_dir/OrthoFinder/Results_Sep19_2/Single_Copy_Orthologue_Sequences/{orthogroup}.fa")
+#rule all:
+#     input:expand(cdsnucl_rn+"{name}.fasta", name=species_name), cdsnucl_rn+"All_CDS_nucl.fasta", expand(out+"{id}_nucl.fa", id=orthog_name), expand(out_dup+"{id}_output_alignment", id=orthog_name), expand(out_dup+"{id}_AA_NT_alignments", id=orthog_name)
+rule all:
+     input:expand(out+"macse_output/"+"{id}_final_align_NT.aln", id=orthog_name),
+           expand("orthogroup_go_terms/{id}_go_done.txt",id=orthog_name),
+           expand(gard_out+"{id}_gard_done.txt",id=orthog_name) 
+      #expand(out+"{id}_nucl.fa", id=orthog_name),
+
+#Get CDS nucleotide longest isoform sequences using the genome and annotation
+#also adding the names of the species to the beginning of each of these sequences
+rule CDS_nucleotide:
+     input: longiso_annotation = longiso_dir+"{name}_longiso.gff"
+     output: cdsnucl_rn+"{name}.fasta"
+     resources: mem_mb = 9000
+     params: cpu = 7,
+             fasta = gen_annt_dir+"{name}.fna",
+             prefix = cdsnucl_dir+"{name}_CDS_nucl.fasta",
+             id = "{name}",
+             cds_path = cdsnucl_dir
+     shell:"""
+           module load agat/0.9.2
+           agat_sp_extract_sequences.pl -g {input.longiso_annotation} -f {params.fasta} \
+           -t cds --roo --clean_final_stop -o {params.prefix}
+           #add the respective species name at the beginning of each sequence
+           sed 's/>/>{params.id}_/g' {params.cds_path}{params.id}_CDS_nucl.fasta \
+            > {output}
+           """
+
+##Create a CDS nucleotide database
+#change the colons to underscores (this is only a problem for v vulgaris, 
+#which has an underscore in orthofinder outputs but not the agat output)
+rule CDS_database:
+     input: expand(cdsnucl_rn+"{name}.fasta",name=species_name)
+     output: cdsnucl_rn+"renamed_All_CDS_nucl.fasta"
+     resources:mem_mb = 3000
+     params:cpu=1,
+            dir = cdsnucl_rn,
+
+     shell:"""
+           cat {params.dir}/*.fasta > {params.dir}/All_CDS_nucl.fasta
+           sed -e 's/:/_/g' {params.dir}/All_CDS_nucl.fasta > {output}
+           """
+
+##get fasta DNA sequence of each species based on single copy orthologue Orthogroup ID 
+rule nucl_alignments:
+     input: ortho_seqs = ortho_seq_dir+"{id}.fa",
+            nucl_fasta = cdsnucl_rn+"renamed_All_CDS_nucl.fasta"
+     output:out+"{id}_nucl.fa"
+     resources:mem_mb = 3000
+     params:cpu=1,
+            id = "{id}",
+            out_align = out
+     shell:"""
+           module load python
+           grep ">" {input.ortho_seqs} > {params.out_align}/{params.id}_fasta_header 
+           python fastafetcher.py -f {input.nucl_fasta} -k {params.out_align}/{params.id}_fasta_header -o {output}
+           """
+#OG0003622_nucl.fa
+#run macse to get the nucleotide  alignments that will be input to hyphy
+#for some reason, the whole path being input to --in_seq_file causes problems with permissions. instead change to the directory and just use base filename
+#getting the warning WARNING: underlay of /usr/share/zoneinfo/Etc/UTC required more than 50 (62) bind mounts
+#as well as WARNING: The 'out_NT' option has been ignored, please read options documentation for more explanations.The file '__OG0006410_final_homol_AA.aln' was created.
+#this may be causing the non-zero exits
+rule macse_align:
+     input:out+"{id}_nucl.fa"
+     output:out+"macse_output/"+"{id}_final_align_NT.aln"
+     resources:mem_mb = 42000,
+               disk_mb=4000
+     params:cpu=1,
+            id="{id}",
+            path=out
+     shell:"""
+           cd {params.path}
+           module load singularity
+           set +e
+           singularity run $HOME/MACSE_ALFIX_v01.sif --in_seq_file {params.id}_nucl.fa \
+           --java_mem 35000m \
+           --out_dir macse_output --out_file_prefix {params.id}
+           exitcode=$?
+           if [ $exitcode -eq 122 ]
+           then
+               exit 1
+           else
+               exit 0
+           fi
+           """
+
+
+#for each orthogroup, grab the unique go terms and store them in txt files
+#OGOG0008634_go_done.txt
+#all asterisks were replaced with X's in the input fa's to intersproscan
+#non-zero exits from interproscan even with successful scan
+rule interproscan:
+    input:"ortho_sequences/{id}.fa"
+    output:"orthogroup_go_terms/{id}_go_done.txt",
+    params:cpu=3,
+           ortho_id = "{id}"
+    resources:mem_mb = 18000
+    shell:"""
+          module load interproscan
+          /uufs/chpc.utah.edu/sys/installdir/interproscan/5.56-89.0/interproscan.sh \
+          -i {input} \
+          -d orthogroup_go_terms -f tsv \
+          -appl Pfam -appl SUPERFAMILY -appl PANTHER --goterms
+          touch {output}
+          """
+
